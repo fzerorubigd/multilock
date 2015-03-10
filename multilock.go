@@ -1,9 +1,16 @@
 // Package multilock provide A simple method to lock base on a holder
 package multilock
 
-import "sync"
+import (
+	"errors"
+	"sync"
+)
 
-type lockMap map[interface{}]*sync.RWMutex
+type refCounter struct {
+	counter int
+	lock    sync.RWMutex
+}
+type lockMap map[interface{}]*refCounter
 
 // MultiLock is the main interface for lock base on holder
 type MultiLock interface {
@@ -18,57 +25,79 @@ type MultiLock interface {
 
 	// RUnlock the the read lock
 	RUnlock(interface{})
-
-	// Locker returns the actual locker
-	Locker(interface{}) *sync.RWMutex
-
-	// Release remove the locker from
-	Release(interface{})
 }
 
 // A multi lock type
 type lock struct {
-	l     *sync.RWMutex
-	locks lockMap
+	inUse lockMap
+	l     *sync.Mutex
+	pool  *sync.Pool
 }
 
 func (l *lock) Lock(holder interface{}) {
-	l.Locker(holder).Lock()
+	m := l.getLocker(holder)
+	m.lock.Lock()
+	l.l.Lock()
+	defer l.l.Unlock()
+	m.counter++
 }
 
 func (l *lock) RLock(holder interface{}) {
-	l.Locker(holder).RLock()
+	m := l.getLocker(holder)
+	m.lock.RLock()
+	l.l.Lock()
+	defer l.l.Unlock()
+	m.counter++
 }
 
 func (l *lock) Unlock(holder interface{}) {
-	l.Locker(holder).Unlock()
+	m := l.getLocker(holder)
+	m.lock.Unlock()
+	l.putBackInPool(holder, m)
 }
 
 func (l *lock) RUnlock(holder interface{}) {
-	l.Locker(holder).RUnlock()
+	m := l.getLocker(holder)
+	m.lock.RUnlock()
+	l.putBackInPool(holder, m)
 }
 
-func (l *lock) Locker(holder interface{}) *sync.RWMutex {
+func (l *lock) putBackInPool(holder interface{}, m *refCounter) {
 	l.l.Lock()
 	defer l.l.Unlock()
 
-	res, ok := l.locks[holder]
-	if !ok {
-		res = &sync.RWMutex{}
-		l.locks[holder] = res
+	m.counter--
+	if m.counter <= 0 {
+		l.pool.Put(m)
+		delete(l.inUse, holder)
 	}
-
-	return res
 }
 
-func (l *lock) Release(holder interface{}) {
+func (l *lock) getLocker(holder interface{}) *refCounter {
 	l.l.Lock()
 	defer l.l.Unlock()
+	res, ok := l.inUse[holder]
+	if !ok {
+		p := l.pool.Get()
+		res, ok = p.(*refCounter)
+		if !ok {
+			panic(errors.New("the pool return invalid result"))
+		}
 
-	delete(l.locks, holder)
+		l.inUse[holder] = res
+	}
+	return res
 }
 
 // NewMultiLock create a new multi lock
 func NewMultiLock() MultiLock {
-	return &lock{&sync.RWMutex{}, make(lockMap)}
+	return &lock{
+		make(lockMap),
+		&sync.Mutex{},
+		&sync.Pool{
+			New: func() interface{} {
+				return &refCounter{0, sync.RWMutex{}}
+			},
+		},
+	}
 }
