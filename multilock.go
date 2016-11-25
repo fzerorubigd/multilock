@@ -8,7 +8,7 @@ import (
 
 type refCounter struct {
 	counter int
-	lock    sync.Mutex
+	lock    sync.RWMutex
 }
 type lockMap map[interface{}]*refCounter
 
@@ -44,7 +44,7 @@ func (l *lock) Lock(holder interface{}) {
 
 func (l *lock) RLock(holder interface{}) {
 	m := l.getLocker(holder)
-	m.lock.Lock()
+	m.lock.RLock()
 	l.l.Lock()
 	defer l.l.Unlock()
 	m.counter++
@@ -58,7 +58,7 @@ func (l *lock) Unlock(holder interface{}) {
 
 func (l *lock) RUnlock(holder interface{}) {
 	m := l.getLocker(holder)
-	m.lock.Unlock()
+	m.lock.RUnlock()
 	l.putBackInPool(holder, m)
 }
 
@@ -96,7 +96,7 @@ func NewMultiLock() MultiLock {
 		&sync.Mutex{},
 		&sync.Pool{
 			New: func() interface{} {
-				return &refCounter{0, sync.Mutex{}}
+				return &refCounter{0, sync.RWMutex{}}
 			},
 		},
 	}
